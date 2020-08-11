@@ -1,5 +1,0 @@
-FROM scratch
-
-COPY ./ /
-
-ENTRYPOINT ["/bin/bash"]

@@ -3,14 +3,10 @@
 set -e
 
 arch="$1"
-chroot_dir="chroot_${1}"
 install_manager="yum"
 linux_distro='fedora'
 debian_version="${2:-buster}"
-docker_file="Dockerfile-$arch"
-
-deboostrap_variant="minbase"
-debootstrap_flags="--variant=${deboostrap_variant}"
+debian_variant="${3:-minbase}"
 
 version=`cat VERSION`
 
@@ -18,7 +14,7 @@ echo "Starting build system for ${version}"
 
 function check_args {
   if [[ "$arch" == "" || "$debian_version" == "" ]]; then
-    echo "usage: $0 <cpu architecture> [cpu architecture]"
+    echo "usage: $0 <cpu architecture> [debian version] [debian variant]"
     exit 1
   fi
 }
@@ -61,6 +57,7 @@ function init_debootstrap {
 function init_qemu_user_static {
   if ! is_package_installed qemu-arm-static; then
     echo "Installing qemu-user-static..."
+    sudo $install_manager install -y qemu-user-binfmt
     sudo $install_manager install -y qemu-user-static
   fi;
 }
@@ -89,9 +86,9 @@ function init_docker {
                           curl \
                           gnupg-agent \
                           software-properties-common
-      curl -fsSL https://download.docker.com/linux/debian/gpg | sudo apt-key add -
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
       sudo add-apt-repository \
-                              "deb [arch=amd64] https://download.docker.com/linux/debian \
+                              "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
                                $(lsb_release -cs) \
                                stable"
       sudo apt update
@@ -108,46 +105,41 @@ function init_docker {
       while true; do
         read -p "Fedora requires a reboot after installing Docker for the first time. Would you like to reboot? (y|n): " yn
         case $yn in
-            [Yy]* ) sudo shutdown -P now; break;;
+            [Yy]* ) sudo reboot; break;;
             [Nn]* ) echo "Please reboot before re-running this script"; exit 1;;
             * ) echo "Please answer yes or no.";;
         esac
       done
     fi
   fi
-  docker login
-}
-
-function init_fakeroot {
-  if ! is_package_installed fakeroot; then
-    echo "Installing fakeroot and fakechroot... "
-    sudo $install_manager install -y fakeroot fakechroot
-  fi;
-}
-
-function create_chroot {
-  if [[ ! -f "$docker_file" ]]; then
-    echo "Specified architecture is not supported yet: ${arch}"
-    exit 1
-  fi;
-
-  if [[ ! -d $chroot_dir ]]; then
-    echo -n "Creating Debian root filesystem for ${arch}... "
-    fakechroot fakeroot debootstrap $debootstrap_flags --arch="$arch" "$debian_version" "$chroot_dir" || :
-    echo "done."
-  fi
+#  docker login
 }
 
 function build_docker {
   echo "Building Docker container... "
-  docker_versioned_tag="${arch}/embedci:${version}"
-  docker_latest_tag="${arch}/embedci:latest"
-  cp -f "$docker_file" "${chroot_dir}/Dockerfile"
-  pushd "$chroot_dir"
-  echo Dockerfile > .dockerignore
-  docker build . -t "$docker_versioned_tag" -t "$docker_latest_tag"
-  docker run -v "/usr/bin/qemu-${arch}-static:/usr/bin/qemu-${arch}-static" "$docker_versioned_tag" true
-  popd
+  docker_versioned_tag="${arch}/embedci:${version}-${debian_version}-${debian_variant}"
+  docker_latest_tag="${arch}/embedci:latest-${debian_version}-${debian_variant}"
+
+  qemu_static="/usr/bin/qemu-arm-static"
+  case "$arch" in
+    armel|armhf) qemu_static="/usr/bin/qemu-arm-static";;
+    arm64) qemu_static="/usr/bin/qemu-aarch64-static";;
+    *) qemu_static="/usr/bin/qemu-${arch}-static";;
+  esac
+
+  qemu_static_basename=$(basename "$qemu_static")
+
+  cp "$qemu_static" .
+
+  docker build . \
+    -t "$docker_versioned_tag" \
+    -t "$docker_latest_tag" \
+    --build-arg "QEMU_STATIC=${qemu_static_basename}" \
+    --build-arg "ARCH=${arch}" \
+    --build-arg "DEBIAN_VERSION=${debian_version}" \
+    --build-arg "DEBIAN_VARIANT=${debian_variant}"
+  docker run -v "${qemu_static}:${qemu_static}" "$docker_versioned_tag" -c "uname -a"
+  echo "Successfully built container ${docker_latest_tag}!"
 }
 
 check_args
@@ -155,6 +147,4 @@ detect_os
 init_debootstrap
 init_qemu_user_static
 init_docker
-init_fakeroot
-create_chroot
 build_docker

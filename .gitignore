@@ -5,6 +5,8 @@
 
 chroot_*/
 
+qemu-*-static
+
 # General
 .DS_Store
 .AppleDouble
