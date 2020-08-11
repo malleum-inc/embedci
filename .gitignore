@@ -3,6 +3,8 @@
 
 .idea/
 
+chroot_*/
+
 # General
 .DS_Store
 .AppleDouble
